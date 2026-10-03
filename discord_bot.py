@@ -99,7 +99,7 @@ def ref_price(lot):
     return None, None
 
 
-def find_auctions(max_price, hours, pages=4):
+def find_auctions(max_price, hours, pages=8):
     """Аукционы, которые закончатся в ближайшие `hours` часов, лучшие по скидке первыми.
 
     Блокирующая функция: из бота её нужно вызывать через run_in_executor.
