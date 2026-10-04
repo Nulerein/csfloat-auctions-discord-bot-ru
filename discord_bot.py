@@ -1,12 +1,14 @@
-#!/usr/bin/env python3
 """
 CSFloat AuctionRadar: Discord-бот.
 
-Команда /auctions показывает аукционы CSFloat, которые скоро закончатся,
-лучшие по скидке первыми. Если задан ALERT_CHANNEL_ID, бот ещё и сам проверяет
-CSFloat каждые несколько минут и пишет в канал о новых выгодных аукционах.
+Команды:
+  /auctions  аукционы, которые скоро закончатся, лучшие по скидке первыми
+  /deals     выгодные обычные лоты (не аукционы): с лучшей скидкой или самые новые
 
-Установка:  pip install -r requirements-bot.txt
+Если задан ALERT_CHANNEL_ID, бот ещё и сам проверяет аукционы каждые несколько минут
+и пишет в канал о новых выгодных.
+
+Установка:  pip install requests discord.py python-dotenv
 Настройка:  скопируй .env.example в .env и заполни (файл .env никому не показывай)
 Запуск:     python discord_bot.py
 """
@@ -15,6 +17,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import discord
 import requests
@@ -63,6 +66,14 @@ def parse_time(s):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def make_session():
+    session = requests.Session()
+    session.headers["User-Agent"] = "csfloat-auctionradar-discord/1.0"
+    if CSFLOAT_KEY:
+        session.headers["Authorization"] = CSFLOAT_KEY
+    return session
+
+
 def api_get(session, params, retries=3):
     for _ in range(retries):
         r = session.get(API, params=params, timeout=20)
@@ -99,16 +110,12 @@ def ref_price(lot):
     return None, None
 
 
-def find_auctions(max_price, hours, pages=8):
+def find_auctions(max_price, hours, pages=4):
     """Аукционы, которые закончатся в ближайшие `hours` часов, лучшие по скидке первыми.
 
     Блокирующая функция: из бота её нужно вызывать через run_in_executor.
     """
-    session = requests.Session()
-    session.headers["User-Agent"] = "csfloat-auctionradar-discord/1.0"
-    if CSFLOAT_KEY:
-        session.headers["Authorization"] = CSFLOAT_KEY
-
+    session = make_session()
     params = {
         "type": "auction",
         "sort_by": "expires_soon",
@@ -141,11 +148,56 @@ def find_auctions(max_price, hours, pages=8):
             bid = details.get("min_next_bid") or lot.get("price") or 0  # сколько ставить сейчас
             item = lot.get("item") or {}
             rows.append({
-                "id": lot.get("id"), "exp": exp, "bid": bid, "ref": ref, "steam": src != "ref",
-                "disc": (ref - bid) / ref * 100,
+                "kind": "auction", "id": lot.get("id"), "exp": exp, "bid": bid, "ref": ref,
+                "steam": src != "ref", "disc": (ref - bid) / ref * 100,
                 "float": item.get("float_value"), "name": item.get("market_hash_name", "?"),
             })
         if past_window or not cursor:
+            break
+    rows.sort(key=lambda r: r["disc"], reverse=True)
+    return rows
+
+
+def find_deals(max_price, min_price, sort_by, min_sales, pages):
+    """Обычные лоты (buy_now) со скидкой к референсной цене, лучшие первыми.
+
+    sort_by: "highest_discount" (лучшие по версии CSFloat) или "most_recent" (самые новые).
+    min_sales: референс должен быть построен минимум на стольких продажах (0 - не проверять).
+    Блокирующая функция: из бота её нужно вызывать через run_in_executor.
+    """
+    session = make_session()
+    params = {
+        "type": "buy_now",
+        "sort_by": sort_by,
+        "max_price": int(round(max_price * 100)),  # API принимает центы
+        "limit": 50,
+    }
+    if min_price > 0:
+        params["min_price"] = int(round(min_price * 100))
+    if min_sales > 0:
+        params["min_ref_qty"] = min_sales
+    rows, cursor = [], None
+    for _ in range(pages):
+        if cursor:
+            params["cursor"] = cursor
+        batch, cursor = unpack(api_get(session, params))
+        if not batch:
+            break
+        for lot in batch:
+            if lot.get("state", "listed") != "listed":
+                continue
+            ref, src = ref_price(lot)
+            price = lot.get("price") or 0
+            if not ref or not price:
+                continue
+            item = lot.get("item") or {}
+            rows.append({
+                "kind": "deal", "id": lot.get("id"), "bid": price, "ref": ref,
+                "steam": src != "ref", "disc": (ref - price) / ref * 100,
+                "float": item.get("float_value"), "name": item.get("market_hash_name", "?"),
+                "offer": lot.get("min_offer_price"), "created": parse_time(lot.get("created_at")),
+            })
+        if not cursor:
             break
     rows.sort(key=lambda r: r["disc"], reverse=True)
     return rows
@@ -159,13 +211,31 @@ def fmt_left(exp):
     return f"{h}ч {m:02d}м"
 
 
+def fmt_age(created):
+    secs = max(int((datetime.now(timezone.utc) - created).total_seconds()), 0)
+    if secs < 60:
+        return "только что"
+    if secs < 3600:
+        return f"{secs // 60}м назад"
+    if secs < 86400:
+        return f"{secs // 3600}ч назад"
+    return f"{secs // 86400}д назад"
+
+
 def fmt_row(r):
     star = "*" if r["steam"] else ""
     fv = f"{r['float']:.4f}" if r["float"] is not None else "-"
-    name = r["name"].replace("[", "(").replace("]", ")")
-    return (f"**{r['disc']:+.1f}%** [{name}]({ITEM_URL.format(r['id'])})\n"
-            f"ставка ${r['bid'] / 100:.2f} · реф ${r['ref'] / 100:.2f}{star} · "
-            f"{fmt_left(r['exp'])} · float {fv}")
+    name = r["name"].replace("[", "(").replace("]", ")")  # квадратные скобки ломают ссылку
+    head = f"**{r['disc']:+.1f}%** [{name}]({ITEM_URL.format(r['id'])})"
+    price, ref = r["bid"] / 100, r["ref"] / 100
+    if r["kind"] == "auction":
+        return f"{head}\nставка ${price:.2f} · реф ${ref:.2f}{star} · {fmt_left(r['exp'])} · float {fv}"
+    info = f"цена ${price:.2f} · реф ${ref:.2f}{star} · float {fv}"
+    if r.get("offer") and r["offer"] < r["bid"]:
+        info += f" · можно предложить от ${r['offer'] / 100:.2f}"
+    if r.get("created"):
+        info += f" · {fmt_age(r['created'])}"
+    return f"{head}\n{info}"
 
 
 def build_embed(rows, title):
@@ -202,7 +272,7 @@ class RadarBot(discord.Client):
             alert_loop.start()
 
     async def on_ready(self):
-        print(f"Бот запущен как {self.user}. Команда: /auctions")
+        print(f"Бот запущен как {self.user}. Команды: /auctions, /deals")
 
 
 client = RadarBot()
@@ -235,6 +305,47 @@ async def auctions(
         return
     await interaction.followup.send(
         embed=build_embed(rows, f"Аукционы до ${max_price:g}, ближайшие {hours:g} ч"))
+
+
+@client.tree.command(name="deals", description="Выгодные обычные лоты (не аукционы) на CSFloat")
+@app_commands.describe(
+    max_price="Максимальная цена в $",
+    min_price="Минимальная цена в $ (отсекает копеечный мусор)",
+    min_discount="Минимальная скидка к референсной цене, %",
+    top="Сколько лотов показать",
+    sort="Какие лоты просматривать: с лучшей скидкой или самые новые",
+    min_sales="Референс построен минимум на стольких продажах (0 - не проверять)",
+)
+@app_commands.choices(sort=[
+    app_commands.Choice(name="С лучшей скидкой", value="highest_discount"),
+    app_commands.Choice(name="Самые новые", value="most_recent"),
+])
+async def deals(
+    interaction: discord.Interaction,
+    max_price: app_commands.Range[float, 1.0, 5000.0] = 30.0,
+    min_price: app_commands.Range[float, 0.0, 5000.0] = 1.0,
+    min_discount: float = 10.0,
+    top: app_commands.Range[int, 1, 15] = 8,
+    sort: Optional[app_commands.Choice[str]] = None,
+    min_sales: app_commands.Range[int, 0, 1000] = 20,
+):
+    await interaction.response.defer(thinking=True)
+    sort_by = sort.value if sort else "highest_discount"
+    pages = 2 if sort_by == "highest_discount" else 4  # новых лотов просматриваем больше
+    try:
+        rows = await asyncio.get_running_loop().run_in_executor(
+            None, find_deals, max_price, min_price, sort_by, min_sales, pages)
+    except (CSFloatError, requests.RequestException) as e:
+        await interaction.followup.send(f"Не получилось получить данные CSFloat: {e}")
+        return
+    rows = [r for r in rows if r["disc"] >= min_discount][:top]
+    if not rows:
+        await interaction.followup.send(
+            "Ничего не нашлось. Попробуй поднять max_price, снизить min_discount или min_sales.")
+        return
+    mode = "с лучшей скидкой" if sort_by == "highest_discount" else "самые новые"
+    await interaction.followup.send(
+        embed=build_embed(rows, f"Обычные лоты ${min_price:g}-${max_price:g}, {mode}"))
 
 
 @tasks.loop(minutes=5)  # реальный интервал берётся из ALERT_INTERVAL_MIN
