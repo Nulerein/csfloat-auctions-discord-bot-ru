@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 CSFloat AuctionRadar: Discord-бот.
 
