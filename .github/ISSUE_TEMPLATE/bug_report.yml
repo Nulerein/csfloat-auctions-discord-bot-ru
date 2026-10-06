@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a bug or unexpected behavior.
+title: ""
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please provide as much detail as possible so we can reproduce it quickly.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem and the exact behavior you observed.
+      placeholder: The bot crashes when running /auctions...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the precise steps to reproduce the issue.
+      placeholder: |
+        1. Start the bot
+        2. Run /auctions on the server
+        3. Observe the error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Python version, OS, Discord server details, and any relevant `.env` values without secrets.
+      placeholder: |
+        Python: 3.11
+        OS: Windows 11
+        Discord bot version: latest
+        CSFloat API key present: yes
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Paste relevant console output, stack traces, or attach screenshots.
+      placeholder: Traceback (most recent call last):
