@@ -1,4 +1,4 @@
-# CSFloat AuctionRadar
+# CSFloat AuctionRadarDiscord
 
 Discord-бот, который ищет на CSFloat выгодные скины CS2 и показывает результаты прямо в Discord. Поддерживает аукционы, обычные лоты и автоматические уведомления о новых аукционах.
 
