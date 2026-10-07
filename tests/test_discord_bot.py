@@ -33,6 +33,60 @@ class ParseTimeTests(unittest.TestCase):
         self.assertIsNone(discord_bot.parse_time("not a date"))
 
 
+class ConfigurationValidationTests(unittest.TestCase):
+    def test_float_setting_uses_default_for_missing_or_blank_values(self):
+        self.assertEqual(discord_bot.parse_float_setting("SETTING", None, 5), 5)
+        self.assertEqual(discord_bot.parse_float_setting("SETTING", "  ", 5), 5)
+
+    def test_float_setting_parses_valid_number_and_boundaries(self):
+        self.assertEqual(
+            discord_bot.parse_float_setting(
+                "ALERT_MAX_PRICE", "5000", 30, minimum=1, maximum=5000
+            ),
+            5000,
+        )
+        self.assertEqual(
+            discord_bot.parse_float_setting(
+                "ALERT_INTERVAL_MIN", "0.5", 5, minimum=0, minimum_exclusive=True
+            ),
+            0.5,
+        )
+
+    def test_float_setting_rejects_non_numeric_non_finite_and_out_of_range_values(self):
+        invalid_values = (
+            ("SETTING", "abc", 5, None, None, False, "must be a number"),
+            ("SETTING", "NaN", 5, None, None, False, "finite number"),
+            ("SETTING", "Infinity", 5, None, None, False, "finite number"),
+            ("ALERT_INTERVAL_MIN", "0", 5, 0, None, True, "greater than 0"),
+            ("ALERT_MAX_PRICE", "0", 30, 1, 5000, False, "at least 1"),
+            ("ALERT_MAX_PRICE", "5001", 30, 1, 5000, False, "at most 5000"),
+        )
+        for name, value, default, minimum, maximum, exclusive, message in invalid_values:
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                discord_bot.parse_float_setting(
+                    name,
+                    value,
+                    default,
+                    minimum=minimum,
+                    maximum=maximum,
+                    minimum_exclusive=exclusive,
+                )
+
+    def test_optional_discord_id_accepts_empty_or_numeric_value(self):
+        self.assertIsNone(discord_bot.parse_optional_discord_id("GUILD_ID", " "))
+        self.assertEqual(
+            discord_bot.parse_optional_discord_id("GUILD_ID", "123456789"),
+            "123456789",
+        )
+
+    def test_optional_discord_id_rejects_non_numeric_value(self):
+        with self.assertRaisesRegex(ValueError, "GUILD_ID.*only digits"):
+            discord_bot.parse_optional_discord_id("GUILD_ID", "abc123")
+
+
 class ApiPayloadTests(unittest.TestCase):
     def test_unpack_accepts_list_and_paginated_payloads(self):
         rows = [{"id": "one"}]

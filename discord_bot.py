@@ -14,6 +14,7 @@ CSFloat AuctionRadar: Discord-бот.
 """
 import asyncio
 import json
+import math
 import os
 import re
 import tempfile
@@ -38,13 +39,66 @@ ITEM_URL = "https://csfloat.com/item/{}"
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 CSFLOAT_KEY = os.getenv("CSFLOAT_API_KEY")
-GUILD_ID = os.getenv("GUILD_ID")
-ALERT_CHANNEL_ID = os.getenv("ALERT_CHANNEL_ID")
-ALERT_INTERVAL_MIN = float(os.getenv("ALERT_INTERVAL_MIN") or 5)
-ALERT_MAX_PRICE = float(os.getenv("ALERT_MAX_PRICE") or 30)
-ALERT_HOURS = float(os.getenv("ALERT_HOURS") or 6)
-ALERT_MIN_DISCOUNT = float(os.getenv("ALERT_MIN_DISCOUNT") or 15)
 SEEN_AUCTIONS_FILE = Path(__file__).with_name("seen_auctions.json")
+
+
+def parse_float_setting(
+    name,
+    raw_value,
+    default,
+    *,
+    minimum=None,
+    maximum=None,
+    minimum_exclusive=False,
+):
+    """Parse and validate a finite floating-point environment setting."""
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        raise ValueError(f"{name} must be a number.") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number.")
+    if minimum is not None and (value <= minimum if minimum_exclusive else value < minimum):
+        operator = "greater than" if minimum_exclusive else "at least"
+        raise ValueError(f"{name} must be {operator} {minimum:g}.")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be at most {maximum:g}.")
+    return value
+
+
+def parse_optional_discord_id(name, value):
+    """Return an optional Discord snowflake string, rejecting non-numeric IDs."""
+    if value is None or not value.strip():
+        return None
+    if not value.isdigit():
+        raise ValueError(f"{name} must contain only digits.")
+    return value
+
+
+try:
+    GUILD_ID = parse_optional_discord_id("GUILD_ID", os.getenv("GUILD_ID"))
+    ALERT_CHANNEL_ID = parse_optional_discord_id(
+        "ALERT_CHANNEL_ID", os.getenv("ALERT_CHANNEL_ID")
+    )
+    ALERT_INTERVAL_MIN = parse_float_setting(
+        "ALERT_INTERVAL_MIN", os.getenv("ALERT_INTERVAL_MIN"), 5,
+        minimum=0, minimum_exclusive=True,
+    )
+    ALERT_MAX_PRICE = parse_float_setting(
+        "ALERT_MAX_PRICE", os.getenv("ALERT_MAX_PRICE"), 30,
+        minimum=1, maximum=5000,
+    )
+    ALERT_HOURS = parse_float_setting(
+        "ALERT_HOURS", os.getenv("ALERT_HOURS"), 6,
+        minimum=0.1, maximum=168,
+    )
+    ALERT_MIN_DISCOUNT = parse_float_setting(
+        "ALERT_MIN_DISCOUNT", os.getenv("ALERT_MIN_DISCOUNT"), 15
+    )
+except ValueError as e:
+    raise SystemExit(f"Ошибка конфигурации .env: {e}") from None
 
 
 # ---------- работа с CSFloat ----------
