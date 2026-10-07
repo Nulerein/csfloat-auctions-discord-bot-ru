@@ -13,10 +13,13 @@ CSFloat AuctionRadar: Discord-бот.
 Запуск:     python discord_bot.py
 """
 import asyncio
+import json
 import os
 import re
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import discord
 import requests
@@ -41,6 +44,7 @@ ALERT_INTERVAL_MIN = float(os.getenv("ALERT_INTERVAL_MIN") or 5)
 ALERT_MAX_PRICE = float(os.getenv("ALERT_MAX_PRICE") or 30)
 ALERT_HOURS = float(os.getenv("ALERT_HOURS") or 6)
 ALERT_MIN_DISCOUNT = float(os.getenv("ALERT_MIN_DISCOUNT") or 15)
+SEEN_AUCTIONS_FILE = Path(__file__).with_name("seen_auctions.json")
 
 
 # ---------- работа с CSFloat ----------
@@ -63,6 +67,59 @@ def parse_time(s):
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def load_seen(path=SEEN_AUCTIONS_FILE, now=None):
+    """Load unexpired notified auction IDs from the local JSON state file."""
+    path = Path(path)
+    now = now or datetime.now(timezone.utc)
+    try:
+        with path.open(encoding="utf-8") as state_file:
+            payload = json.load(state_file)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as e:
+        raise RuntimeError(f"Не удалось прочитать состояние уведомлений {path}: {e}") from e
+
+    if not isinstance(payload, dict):
+        raise TypeError(f"Некорректный формат состояния уведомлений в {path}: ожидался JSON-объект.")
+
+    seen = {}
+    for listing_id, expiration in payload.items():
+        exp = parse_time(expiration) if isinstance(expiration, str) else None
+        if exp is None:
+            raise ValueError(f"Некорректное время окончания аукциона для ID {listing_id!r} в {path}.")
+        if exp > now:
+            seen[listing_id] = exp
+    return seen
+
+
+def save_seen(seen, path=SEEN_AUCTIONS_FILE):
+    """Atomically save notified auction IDs and their expiration times."""
+    path = Path(path)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as state_file:
+            temp_path = Path(state_file.name)
+            json.dump(
+                {listing_id: expiration.isoformat() for listing_id, expiration in seen.items()},
+                state_file,
+                ensure_ascii=False,
+                indent=2,
+            )
+            state_file.write("\n")
+        os.replace(temp_path, path)
+    except (OSError, TypeError, ValueError) as e:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Не удалось сохранить состояние уведомлений {path}: {e}") from e
 
 
 def make_session():
@@ -267,6 +324,7 @@ class RadarBot(discord.Client):
         else:
             await self.tree.sync()
         if ALERT_CHANNEL_ID and ALERT_CHANNEL_ID.isdigit():
+            self.seen = load_seen()
             alert_loop.change_interval(minutes=ALERT_INTERVAL_MIN)
             alert_loop.start()
 
@@ -357,8 +415,9 @@ async def alert_loop():
         client.seen = {i: e for i, e in client.seen.items() if e > now}  # забываем закончившиеся
         new = [r for r in rows if r["disc"] >= ALERT_MIN_DISCOUNT and r["id"] not in client.seen][:10]
         if new:
-            client.seen.update({r["id"]: r["exp"] for r in new})
             await channel.send(embed=build_embed(new, f"Новые выгодные аукционы: {len(new)}"))
+            client.seen.update({r["id"]: r["exp"] for r in new})
+        save_seen(client.seen)
     except Exception as e:  # цикл не должен умирать из-за одной ошибки  # noqa: BLE001
         print(f"[alerts] ошибка: {e}")
 

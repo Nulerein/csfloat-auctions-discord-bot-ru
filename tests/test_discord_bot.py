@@ -1,5 +1,8 @@
+import json
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import discord_bot
@@ -52,6 +55,40 @@ class ApiPayloadTests(unittest.TestCase):
             (900, "steam"),
         )
         self.assertEqual(discord_bot.ref_price({}), (None, None))
+
+
+class SeenAuctionsStateTests(unittest.TestCase):
+    def test_load_seen_returns_empty_when_state_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "seen.json"
+            self.assertEqual(discord_bot.load_seen(path, now=NOW), {})
+
+    def test_save_and_load_seen_preserves_active_auctions_and_drops_expired(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "seen.json"
+            discord_bot.save_seen(
+                {
+                    "active": NOW + timedelta(hours=1),
+                    "expired": NOW - timedelta(minutes=1),
+                },
+                path,
+            )
+            loaded = discord_bot.load_seen(path, now=NOW)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(loaded, {"active": NOW + timedelta(hours=1)})
+        self.assertEqual(saved, {
+            "active": "2025-01-01T13:00:00+00:00",
+            "expired": "2025-01-01T11:59:00+00:00",
+        })
+
+    def test_load_seen_raises_for_malformed_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "seen.json"
+            path.write_text('{"auction": "not a date"}', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Некорректное время"):
+                discord_bot.load_seen(path, now=NOW)
 
 
 class ListingSearchTests(unittest.TestCase):

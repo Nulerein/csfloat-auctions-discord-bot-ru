@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Local state for auction notifications
+seen_auctions.json
+seen_auctions.json.*.tmp
