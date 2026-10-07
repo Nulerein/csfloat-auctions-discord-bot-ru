@@ -14,6 +14,7 @@ CSFloat AuctionRadar: Discord-бот.
 """
 import asyncio
 import json
+import logging
 import math
 import os
 import re
@@ -26,6 +27,8 @@ import discord
 import requests
 from discord import app_commands
 from discord.ext import tasks
+
+logger = logging.getLogger(__name__)
 
 try:  # .env подхватывается, если установлен python-dotenv
     from dotenv import load_dotenv
@@ -383,7 +386,7 @@ class RadarBot(discord.Client):
             alert_loop.start()
 
     async def on_ready(self):
-        print(f"Бот запущен как {self.user}. Команды: /auctions, /deals")
+        logger.info("Бот запущен как %s. Команды: /auctions, /deals", self.user)
 
 
 client = RadarBot()
@@ -407,6 +410,7 @@ async def auctions(
     try:
         rows = await asyncio.get_running_loop().run_in_executor(None, find_auctions, max_price, hours)
     except (CSFloatError, requests.RequestException) as e:
+        logger.warning("CSFloat request failed for /auctions: %s", e)
         await interaction.followup.send(f"Не получилось получить данные CSFloat: {e}")
         return
     rows = [r for r in rows if r["disc"] >= min_discount][:top]
@@ -447,6 +451,7 @@ async def deals(
         rows = await asyncio.get_running_loop().run_in_executor(
             None, find_deals, max_price, min_price, sort_by, min_sales, pages)
     except (CSFloatError, requests.RequestException) as e:
+        logger.warning("CSFloat request failed for /deals: %s", e)
         await interaction.followup.send(f"Не получилось получить данные CSFloat: {e}")
         return
     rows = [r for r in rows if r["disc"] >= min_discount][:top]
@@ -472,8 +477,8 @@ async def alert_loop():
             await channel.send(embed=build_embed(new, f"Новые выгодные аукционы: {len(new)}"))
             client.seen.update({r["id"]: r["exp"] for r in new})
         save_seen(client.seen)
-    except Exception as e:  # цикл не должен умирать из-за одной ошибки  # noqa: BLE001
-        print(f"[alerts] ошибка: {e}")
+    except Exception:  # цикл не должен умирать из-за одной ошибки
+        logger.exception("[alerts] ошибка")
 
 
 @alert_loop.before_loop
@@ -484,4 +489,8 @@ async def _wait_until_ready():
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("Нет DISCORD_TOKEN. Скопируй .env.example в .env и впиши токен бота.")
-    client.run(TOKEN)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    client.run(TOKEN, log_handler=None)
