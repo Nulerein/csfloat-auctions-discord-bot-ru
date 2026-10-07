@@ -13,6 +13,9 @@ Thanks for your interest in improving CSFloat AuctionRadar Discord.
 ## Local checks
 
 ```bash
+python -m pip install -r requirements-dev.txt
+python -m ruff check .
+python -m unittest discover -s tests -v
 python -m py_compile discord_bot.py
 ```
 

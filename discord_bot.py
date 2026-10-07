@@ -17,7 +17,6 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import discord
 import requests
@@ -119,7 +118,7 @@ def find_auctions(max_price, hours, pages=4):
     params = {
         "type": "auction",
         "sort_by": "expires_soon",
-        "max_price": int(round(max_price * 100)),  # API принимает центы
+        "max_price": round(max_price * 100),  # API принимает центы
         "limit": 50,
     }
     now = datetime.now(timezone.utc)
@@ -169,11 +168,11 @@ def find_deals(max_price, min_price, sort_by, min_sales, pages):
     params = {
         "type": "buy_now",
         "sort_by": sort_by,
-        "max_price": int(round(max_price * 100)),  # API принимает центы
+        "max_price": round(max_price * 100),  # API принимает центы
         "limit": 50,
     }
     if min_price > 0:
-        params["min_price"] = int(round(min_price * 100))
+        params["min_price"] = round(min_price * 100)
     if min_sales > 0:
         params["min_ref_qty"] = min_sales
     rows, cursor = [], None
@@ -326,7 +325,7 @@ async def deals(
     min_price: app_commands.Range[float, 0.0, 5000.0] = 1.0,
     min_discount: float = 10.0,
     top: app_commands.Range[int, 1, 15] = 8,
-    sort: Optional[app_commands.Choice[str]] = None,
+    sort: app_commands.Choice[str] | None = None,
     min_sales: app_commands.Range[int, 0, 1000] = 20,
 ):
     await interaction.response.defer(thinking=True)
@@ -360,7 +359,7 @@ async def alert_loop():
         if new:
             client.seen.update({r["id"]: r["exp"] for r in new})
             await channel.send(embed=build_embed(new, f"Новые выгодные аукционы: {len(new)}"))
-    except Exception as e:  # цикл не должен умирать из-за одной ошибки
+    except Exception as e:  # цикл не должен умирать из-за одной ошибки  # noqa: BLE001
         print(f"[alerts] ошибка: {e}")
 
 
