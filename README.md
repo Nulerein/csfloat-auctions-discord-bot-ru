@@ -1,4 +1,4 @@
-# CSFloat AuctionRadarDiscord
+# CSFloat AuctionRadar Discord
 
 <div align="center">
 

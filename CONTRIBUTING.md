@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving CSFloat AuctionRadarDiscord.
+Thanks for your interest in improving CSFloat AuctionRadar Discord.
 
 ## How to contribute
 
