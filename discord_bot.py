@@ -211,16 +211,15 @@ def unpack(payload):
     return (payload.get("data") or payload.get("listings") or []), payload.get("cursor")
 
 
-def ref_price(lot):
-    """Референсная цена в центах и источник: 'ref' (CSFloat) или 'steam' (запасной вариант)."""
+def price_references(lot):
+    """Return base, float-adjusted and Steam prices in cents."""
     ref = lot.get("reference") or {}
-    for key in ("predicted_price", "base_price"):
-        if ref.get(key):
-            return ref[key], "ref"
     scm = (lot.get("item") or {}).get("scm") or {}
-    if scm.get("price"):
-        return scm["price"], "steam"
-    return None, None
+    return (
+        ref.get("base_price") or None,
+        ref.get("predicted_price") or None,
+        scm.get("price") or None,
+    )
 
 
 def find_auctions(max_price, hours, pages=4):
@@ -255,14 +254,17 @@ def find_auctions(max_price, hours, pages=4):
             if exp > deadline:
                 past_window = True  # список идёт по времени окончания, дальше только поздние
                 break
-            ref, src = ref_price(lot)
-            if not ref:
+            base, predicted, steam = price_references(lot)
+            normal_ref = base or steam
+            if not normal_ref:
                 continue
             bid = details.get("min_next_bid") or lot.get("price") or 0  # сколько ставить сейчас
             item = lot.get("item") or {}
             rows.append({
-                "kind": "auction", "id": lot.get("id"), "exp": exp, "bid": bid, "ref": ref,
-                "steam": src != "ref", "disc": (ref - bid) / ref * 100,
+                "kind": "auction", "id": lot.get("id"), "exp": exp, "bid": bid,
+                "ref": normal_ref, "float_ref": predicted,
+                "steam": base is None, "disc": (normal_ref - bid) / normal_ref * 100,
+                "float_disc": (predicted - bid) / predicted * 100 if predicted else None,
                 "float": item.get("float_value"), "name": item.get("market_hash_name", "?"),
             })
         if past_window or not cursor:
@@ -299,14 +301,17 @@ def find_deals(max_price, min_price, sort_by, min_sales, pages):
         for lot in batch:
             if lot.get("state", "listed") != "listed":
                 continue
-            ref, src = ref_price(lot)
+            base, predicted, steam = price_references(lot)
             price = lot.get("price") or 0
-            if not ref or not price:
+            normal_ref = base or steam
+            if not normal_ref or not price:
                 continue
             item = lot.get("item") or {}
             rows.append({
-                "kind": "deal", "id": lot.get("id"), "bid": price, "ref": ref,
-                "steam": src != "ref", "disc": (ref - price) / ref * 100,
+                "kind": "deal", "id": lot.get("id"), "bid": price, "ref": normal_ref,
+                "float_ref": predicted,
+                "steam": base is None, "disc": (normal_ref - price) / normal_ref * 100,
+                "float_disc": (predicted - price) / predicted * 100 if predicted else None,
                 "float": item.get("float_value"), "name": item.get("market_hash_name", "?"),
                 "offer": lot.get("min_offer_price"), "created": parse_time(lot.get("created_at")),
             })
@@ -339,11 +344,18 @@ def fmt_row(r):
     star = "*" if r["steam"] else ""
     fv = f"{r['float']:.4f}" if r["float"] is not None else "-"
     name = r["name"].replace("[", "(").replace("]", ")")  # квадратные скобки ломают ссылку
-    head = f"**{r['disc']:+.1f}%** [{name}]({ITEM_URL.format(r['id'])})"
+    normal_label = "к Steam-цене" if r["steam"] else "к обычной цене"
+    comparison = f"{normal_label}: {r['disc']:+.1f}%"
+    if r.get("float_disc") is not None:
+        comparison += f" · с учётом float: {r['float_disc']:+.1f}%"
+    head = f"**{comparison}** [{name}]({ITEM_URL.format(r['id'])})"
     price, ref = r["bid"] / 100, r["ref"] / 100
+    info = f"обычная цена ${ref:.2f}{star}"
+    if r.get("float_ref"):
+        info += f" · оценка CSFloat с float ${r['float_ref'] / 100:.2f}"
     if r["kind"] == "auction":
-        return f"{head}\nставка ${price:.2f} · реф ${ref:.2f}{star} · {fmt_left(r['exp'])} · float {fv}"
-    info = f"цена ${price:.2f} · реф ${ref:.2f}{star} · float {fv}"
+        return f"{head}\nставка ${price:.2f} · {info} · {fmt_left(r['exp'])} · float {fv}"
+    info = f"цена ${price:.2f} · {info} · float {fv}"
     if r.get("offer") and r["offer"] < r["bid"]:
         info += f" · можно предложить от ${r['offer'] / 100:.2f}"
     if r.get("created"):

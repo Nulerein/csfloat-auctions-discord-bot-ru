@@ -96,19 +96,23 @@ class ApiPayloadTests(unittest.TestCase):
             (rows, "next"),
         )
 
-    def test_ref_price_prefers_csfloat_and_falls_back_to_steam(self):
+    def test_price_references_separates_base_predicted_and_steam(self):
         self.assertEqual(
-            discord_bot.ref_price({
-                "reference": {"predicted_price": 1200, "base_price": 1000},
+            discord_bot.price_references({
+                "reference": {
+                    "predicted_price": 1200,
+                    "base_price": 1000,
+                    "float_factor": 1.2,
+                },
                 "item": {"scm": {"price": 900}},
             }),
-            (1200, "ref"),
+            (1000, 1200, 900),
         )
         self.assertEqual(
-            discord_bot.ref_price({"item": {"scm": {"price": 900}}}),
-            (900, "steam"),
+            discord_bot.price_references({"item": {"scm": {"price": 900}}}),
+            (None, None, 900),
         )
-        self.assertEqual(discord_bot.ref_price({}), (None, None))
+        self.assertEqual(discord_bot.price_references({}), (None, None, None))
 
 
 class SeenAuctionsStateTests(unittest.TestCase):
@@ -155,14 +159,14 @@ class ListingSearchTests(unittest.TestCase):
                 "state": "listed",
                 "price": 800,
                 "auction_details": {"expires_at": expires_soon, "min_next_bid": 800},
-                "reference": {"predicted_price": 1000},
+                "reference": {"base_price": 1000, "predicted_price": 2000},
             },
             {
                 "id": "larger-discount",
                 "state": "listed",
                 "price": 500,
                 "auction_details": {"expires_at": expires_later, "min_next_bid": 500},
-                "reference": {"predicted_price": 1000},
+                "reference": {"base_price": 1000, "predicted_price": 600},
             },
             {
                 "id": "expired",
@@ -199,6 +203,8 @@ class ListingSearchTests(unittest.TestCase):
             "smaller-discount",
         ])
         self.assertEqual(results[0]["disc"], 50)
+        self.assertAlmostEqual(results[0]["float_disc"], 100 / 600 * 100)
+        self.assertEqual(results[1]["float_disc"], 60)
 
     def test_find_deals_filters_unlisted_and_unpriced_rows_and_sorts(self):
         payload = [
@@ -206,14 +212,14 @@ class ListingSearchTests(unittest.TestCase):
                 "id": "lower-discount",
                 "state": "listed",
                 "price": 800,
-                "reference": {"predicted_price": 1000},
+                "reference": {"base_price": 1000, "predicted_price": 2000},
                 "created_at": NOW.isoformat(),
             },
             {
                 "id": "higher-discount",
                 "state": "listed",
                 "price": 500,
-                "reference": {"predicted_price": 1000},
+                "reference": {"base_price": 1000, "predicted_price": 600},
                 "created_at": NOW.isoformat(),
             },
             {
@@ -242,6 +248,28 @@ class ListingSearchTests(unittest.TestCase):
         self.assertEqual(api_get.call_args.args[1]["max_price"], 10000)
         self.assertEqual(api_get.call_args.args[1]["min_price"], 1000)
         self.assertEqual(api_get.call_args.args[1]["min_ref_qty"], 20)
+        self.assertEqual(results[0]["float_disc"], 100 / 600 * 100)
+
+    def test_find_deals_uses_steam_when_base_price_is_missing(self):
+        payload = [{
+            "id": "steam-fallback",
+            "state": "listed",
+            "price": 900,
+            "reference": {"predicted_price": 2000},
+            "item": {"scm": {"price": 1000}, "float_value": 0.2},
+        }]
+        with (
+            patch.object(discord_bot, "make_session"),
+            patch.object(discord_bot, "api_get", return_value=payload),
+        ):
+            results = discord_bot.find_deals(50, 1, "highest_discount", 0, 1)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["ref"], 1000)
+        self.assertTrue(results[0]["steam"])
+        self.assertEqual(results[0]["disc"], 10)
+        self.assertEqual(results[0]["float_ref"], 2000)
+        self.assertAlmostEqual(results[0]["float_disc"], 55)
 
 
 class ListingFormatTests(unittest.TestCase):
@@ -252,8 +280,10 @@ class ListingFormatTests(unittest.TestCase):
             "exp": NOW + timedelta(hours=2, minutes=15),
             "bid": 1490,
             "ref": 1820,
+            "float_ref": 2000,
             "steam": False,
             "disc": 18.2,
+            "float_disc": 25.5,
             "float": 0.1234,
             "name": "AK-47 | Neon Revolution",
         }
@@ -262,9 +292,11 @@ class ListingFormatTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            "**+18.2%** [AK-47 | Neon Revolution]"
+            "**к обычной цене: +18.2% · с учётом float: +25.5%** "
+            "[AK-47 | Neon Revolution]"
             "(https://csfloat.com/item/auction-id)\n"
-            "ставка $14.90 · реф $18.20 · 2ч 15м · float 0.1234",
+            "ставка $14.90 · обычная цена $18.20 · оценка CSFloat с float "
+            "$20.00 · 2ч 15м · float 0.1234",
         )
 
     def test_deal_includes_float_and_listing_age(self):
@@ -273,8 +305,10 @@ class ListingFormatTests(unittest.TestCase):
             "id": "deal-id",
             "bid": 950,
             "ref": 1080,
+            "float_ref": 1150,
             "steam": False,
             "disc": 12.5,
+            "float_disc": 17.4,
             "float": 0.0345,
             "name": "USP-S | Royal Blue",
             "offer": None,
@@ -285,10 +319,32 @@ class ListingFormatTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            "**+12.5%** [USP-S | Royal Blue]"
+            "**к обычной цене: +12.5% · с учётом float: +17.4%** "
+            "[USP-S | Royal Blue]"
             "(https://csfloat.com/item/deal-id)\n"
-            "цена $9.50 · реф $10.80 · float 0.0345 · 18м назад",
+            "цена $9.50 · обычная цена $10.80 · оценка CSFloat с float "
+            "$11.50 · float 0.0345 · 18м назад",
         )
+
+    def test_unadjusted_price_marks_steam_fallback_and_omits_float_discount(self):
+        row = {
+            "kind": "deal",
+            "id": "deal-id",
+            "bid": 6100,
+            "ref": 2036,
+            "float_ref": 6100,
+            "steam": False,
+            "disc": (2036 - 6100) / 2036 * 100,
+            "float_disc": 0,
+            "float": 0.000267,
+            "name": "Desert Eagle | The Bronze",
+            "offer": None,
+            "created": None,
+        }
+        result = discord_bot.fmt_row(row)
+
+        self.assertIn("к обычной цене: -199.6% · с учётом float: +0.0%", result)
+        self.assertIn("цена $61.00 · обычная цена $20.36 · оценка CSFloat с float $61.00", result)
 
 
 if __name__ == "__main__":
