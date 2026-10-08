@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import discord_bot
 
@@ -119,6 +120,46 @@ class ApiPayloadTests(unittest.TestCase):
         self.assertEqual(discord_bot.select_reference(None, 1200, 900), (1200, "predicted"))
         self.assertEqual(discord_bot.select_reference(None, None, 900), (900, "steam"))
         self.assertEqual(discord_bot.select_reference(None, None, None), (None, None))
+
+
+class ApiRequestTests(unittest.TestCase):
+    def test_api_get_retries_rate_limit_then_returns_response(self):
+        rate_limited = Mock(status_code=429, headers={"Retry-After": "3"})
+        success = Mock(status_code=200)
+        success.json.return_value = {"data": []}
+        session = Mock()
+        session.get.side_effect = [rate_limited, success]
+
+        with patch.object(discord_bot.time, "sleep") as sleep:
+            result = discord_bot.api_get(session, {"limit": 5})
+
+        self.assertEqual(result, {"data": []})
+        self.assertEqual(session.get.call_count, 2)
+        sleep.assert_called_once_with(3)
+
+    def test_api_get_raises_for_unauthorized_without_retry(self):
+        unauthorized = Mock(status_code=401)
+        session = Mock()
+        session.get.return_value = unauthorized
+
+        with self.assertRaisesRegex(discord_bot.CSFloatError, "401.*CSFLOAT_API_KEY"):
+            discord_bot.api_get(session, {})
+
+        session.get.assert_called_once()
+
+    def test_api_get_raises_after_exhausting_rate_limit_retries(self):
+        rate_limited = Mock(status_code=429, headers={"Retry-After": "120"})
+        session = Mock()
+        session.get.return_value = rate_limited
+
+        with (
+            patch.object(discord_bot.time, "sleep") as sleep,
+            self.assertRaisesRegex(discord_bot.CSFloatError, "429"),
+        ):
+            discord_bot.api_get(session, {})
+
+        self.assertEqual(session.get.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [60, 60, 60])
 
 
 class SeenAuctionsStateTests(unittest.TestCase):
@@ -426,6 +467,73 @@ class ListingFormatTests(unittest.TestCase):
         self.assertIn("цена $15.00 · оценка CSFloat с float $20.00", result)
         self.assertNotIn("обычная цена", result)
         self.assertEqual(result.count("оценка CSFloat с float"), 1)
+
+
+class SlashCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_registered_slash_commands_have_expected_names_and_options(self):
+        auctions = discord_bot.client.tree.get_command("auctions")
+        deals = discord_bot.client.tree.get_command("deals")
+
+        self.assertIsNotNone(auctions)
+        self.assertIsNotNone(deals)
+        self.assertEqual(
+            {parameter.name for parameter in auctions.parameters},
+            {"max_price", "hours", "top", "min_discount"},
+        )
+        self.assertEqual(
+            {parameter.name for parameter in deals.parameters},
+            {"max_price", "min_price", "min_discount", "top", "sort", "min_sales"},
+        )
+
+    async def test_auctions_command_defers_and_reports_csfloat_errors(self):
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        loop = SimpleNamespace(
+            run_in_executor=AsyncMock(side_effect=discord_bot.CSFloatError("API error"))
+        )
+
+        with patch.object(discord_bot.asyncio, "get_running_loop", return_value=loop):
+            await discord_bot.auctions.callback(interaction)
+
+        interaction.response.defer.assert_awaited_once_with(thinking=True)
+        interaction.followup.send.assert_awaited_once_with(
+            "Не получилось получить данные CSFloat: API error"
+        )
+
+    async def test_deals_command_uses_sort_choice_and_sends_results(self):
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        rows = [{
+            "kind": "deal",
+            "id": "deal",
+            "bid": 800,
+            "ref": 1000,
+            "reference_source": "base",
+            "float_ref": None,
+            "steam": False,
+            "disc": 20,
+            "float_disc": None,
+            "float": None,
+            "name": "Example Skin",
+            "offer": None,
+            "created": None,
+        }]
+        loop = SimpleNamespace(run_in_executor=AsyncMock(return_value=rows))
+        sort = discord_bot.app_commands.Choice(name="Самые новые", value="most_recent")
+
+        with patch.object(discord_bot.asyncio, "get_running_loop", return_value=loop):
+            await discord_bot.deals.callback(interaction, sort=sort)
+
+        loop.run_in_executor.assert_awaited_once_with(
+            None, discord_bot.find_deals, 30.0, 1.0, "most_recent", 20, 4
+        )
+        interaction.response.defer.assert_awaited_once_with(thinking=True)
+        interaction.followup.send.assert_awaited_once()
+        self.assertIn("embed", interaction.followup.send.await_args.kwargs)
 
 
 if __name__ == "__main__":
