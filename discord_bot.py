@@ -222,6 +222,17 @@ def price_references(lot):
     )
 
 
+def select_reference(base, predicted, steam):
+    """Choose the best available comparison price without mislabeling its source."""
+    if base:
+        return base, "base"
+    if predicted:
+        return predicted, "predicted"
+    if steam:
+        return steam, "steam"
+    return None, None
+
+
 def find_auctions(max_price, hours, pages=4):
     """Аукционы, которые закончатся в ближайшие `hours` часов, лучшие по скидке первыми.
 
@@ -255,16 +266,21 @@ def find_auctions(max_price, hours, pages=4):
                 past_window = True  # список идёт по времени окончания, дальше только поздние
                 break
             base, predicted, steam = price_references(lot)
-            normal_ref = base or steam
-            if not normal_ref:
+            reference, reference_source = select_reference(base, predicted, steam)
+            if not reference:
                 continue
             bid = details.get("min_next_bid") or lot.get("price") or 0  # сколько ставить сейчас
             item = lot.get("item") or {}
             rows.append({
                 "kind": "auction", "id": lot.get("id"), "exp": exp, "bid": bid,
-                "ref": normal_ref, "float_ref": predicted,
-                "steam": base is None, "disc": (normal_ref - bid) / normal_ref * 100,
-                "float_disc": (predicted - bid) / predicted * 100 if predicted else None,
+                "ref": reference, "reference_source": reference_source,
+                "float_ref": predicted, "steam": reference_source == "steam",
+                "disc": (reference - bid) / reference * 100,
+                "float_disc": (
+                    (predicted - bid) / predicted * 100
+                    if predicted and reference_source != "predicted"
+                    else None
+                ),
                 "float": item.get("float_value"), "name": item.get("market_hash_name", "?"),
             })
         if past_window or not cursor:
@@ -274,9 +290,10 @@ def find_auctions(max_price, hours, pages=4):
 
 
 def find_deals(max_price, min_price, sort_by, min_sales, pages):
-    """Обычные лоты (buy_now) со скидкой к референсной цене, лучшие первыми.
+    """Обычные лоты (buy_now) со скидкой к выбранной референсной цене.
 
-    sort_by: "highest_discount" (лучшие по версии CSFloat) или "most_recent" (самые новые).
+    Результаты сортируются по скидке к base_price, predicted_price или Steam в этом порядке.
+    sort_by: "highest_discount" или "most_recent" (самые новые).
     min_sales: референс должен быть построен минимум на стольких продажах (0 - не проверять).
     Блокирующая функция: из бота её нужно вызывать через run_in_executor.
     """
@@ -302,16 +319,21 @@ def find_deals(max_price, min_price, sort_by, min_sales, pages):
             if lot.get("state", "listed") != "listed":
                 continue
             base, predicted, steam = price_references(lot)
+            reference, reference_source = select_reference(base, predicted, steam)
             price = lot.get("price") or 0
-            normal_ref = base or steam
-            if not normal_ref or not price:
+            if not reference or not price:
                 continue
             item = lot.get("item") or {}
             rows.append({
-                "kind": "deal", "id": lot.get("id"), "bid": price, "ref": normal_ref,
-                "float_ref": predicted,
-                "steam": base is None, "disc": (normal_ref - price) / normal_ref * 100,
-                "float_disc": (predicted - price) / predicted * 100 if predicted else None,
+                "kind": "deal", "id": lot.get("id"), "bid": price, "ref": reference,
+                "reference_source": reference_source, "float_ref": predicted,
+                "steam": reference_source == "steam",
+                "disc": (reference - price) / reference * 100,
+                "float_disc": (
+                    (predicted - price) / predicted * 100
+                    if predicted and reference_source != "predicted"
+                    else None
+                ),
                 "float": item.get("float_value"), "name": item.get("market_hash_name", "?"),
                 "offer": lot.get("min_offer_price"), "created": parse_time(lot.get("created_at")),
             })
@@ -344,14 +366,20 @@ def fmt_row(r):
     star = "*" if r["steam"] else ""
     fv = f"{r['float']:.4f}" if r["float"] is not None else "-"
     name = r["name"].replace("[", "(").replace("]", ")")  # квадратные скобки ломают ссылку
-    normal_label = "к Steam-цене" if r["steam"] else "к обычной цене"
-    comparison = f"{normal_label}: {r['disc']:+.1f}%"
+    reference_source = r["reference_source"]
+    reference_labels = {
+        "base": ("к обычной цене", "обычная цена"),
+        "predicted": ("к оценке CSFloat с float", "оценка CSFloat с float"),
+        "steam": ("к Steam-цене", "цена Steam"),
+    }
+    comparison_label, price_label = reference_labels[reference_source]
+    comparison = f"{comparison_label}: {r['disc']:+.1f}%"
     if r.get("float_disc") is not None:
         comparison += f" · с учётом float: {r['float_disc']:+.1f}%"
     head = f"**{comparison}** [{name}]({ITEM_URL.format(r['id'])})"
     price, ref = r["bid"] / 100, r["ref"] / 100
-    info = f"обычная цена ${ref:.2f}{star}"
-    if r.get("float_ref"):
+    info = f"{price_label} ${ref:.2f}{star}"
+    if r.get("float_ref") and reference_source != "predicted":
         info += f" · оценка CSFloat с float ${r['float_ref'] / 100:.2f}"
     if r["kind"] == "auction":
         return f"{head}\nставка ${price:.2f} · {info} · {fmt_left(r['exp'])} · float {fv}"

@@ -114,6 +114,12 @@ class ApiPayloadTests(unittest.TestCase):
         )
         self.assertEqual(discord_bot.price_references({}), (None, None, None))
 
+    def test_select_reference_prefers_base_then_predicted_then_steam(self):
+        self.assertEqual(discord_bot.select_reference(1000, 1200, 900), (1000, "base"))
+        self.assertEqual(discord_bot.select_reference(None, 1200, 900), (1200, "predicted"))
+        self.assertEqual(discord_bot.select_reference(None, None, 900), (900, "steam"))
+        self.assertEqual(discord_bot.select_reference(None, None, None), (None, None))
+
 
 class SeenAuctionsStateTests(unittest.TestCase):
     def test_load_seen_returns_empty_when_state_file_is_missing(self):
@@ -206,6 +212,32 @@ class ListingSearchTests(unittest.TestCase):
         self.assertAlmostEqual(results[0]["float_disc"], 100 / 600 * 100)
         self.assertEqual(results[1]["float_disc"], 60)
 
+    def test_find_auctions_uses_predicted_price_before_steam(self):
+        payload = [{
+            "id": "predicted-auction",
+            "state": "listed",
+            "price": 1500,
+            "auction_details": {
+                "expires_at": (NOW + timedelta(hours=1)).isoformat(),
+                "min_next_bid": 1500,
+            },
+            "reference": {"predicted_price": 2000},
+            "item": {"scm": {"price": 1000}, "float_value": 0.2},
+        }]
+        with (
+            patch.object(discord_bot, "datetime", FrozenDateTime),
+            patch.object(discord_bot, "make_session"),
+            patch.object(discord_bot, "api_get", return_value=payload),
+        ):
+            results = discord_bot.find_auctions(25, 4, pages=1)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["ref"], 2000)
+        self.assertEqual(results[0]["reference_source"], "predicted")
+        self.assertFalse(results[0]["steam"])
+        self.assertEqual(results[0]["disc"], 25)
+        self.assertIsNone(results[0]["float_disc"])
+
     def test_find_deals_filters_unlisted_and_unpriced_rows_and_sorts(self):
         payload = [
             {
@@ -250,11 +282,11 @@ class ListingSearchTests(unittest.TestCase):
         self.assertEqual(api_get.call_args.args[1]["min_ref_qty"], 20)
         self.assertEqual(results[0]["float_disc"], 100 / 600 * 100)
 
-    def test_find_deals_uses_steam_when_base_price_is_missing(self):
+    def test_find_deals_uses_predicted_price_before_steam_when_base_is_missing(self):
         payload = [{
-            "id": "steam-fallback",
+            "id": "predicted-fallback",
             "state": "listed",
-            "price": 900,
+            "price": 1500,
             "reference": {"predicted_price": 2000},
             "item": {"scm": {"price": 1000}, "float_value": 0.2},
         }]
@@ -265,11 +297,33 @@ class ListingSearchTests(unittest.TestCase):
             results = discord_bot.find_deals(50, 1, "highest_discount", 0, 1)
 
         self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["ref"], 2000)
+        self.assertEqual(results[0]["reference_source"], "predicted")
+        self.assertFalse(results[0]["steam"])
+        self.assertEqual(results[0]["disc"], 25)
+        self.assertEqual(results[0]["float_ref"], 2000)
+        self.assertIsNone(results[0]["float_disc"])
+
+    def test_find_deals_uses_steam_only_when_csfloat_references_are_missing(self):
+        payload = [{
+            "id": "steam-fallback",
+            "state": "listed",
+            "price": 900,
+            "item": {"scm": {"price": 1000}, "float_value": 0.2},
+        }]
+        with (
+            patch.object(discord_bot, "make_session"),
+            patch.object(discord_bot, "api_get", return_value=payload),
+        ):
+            results = discord_bot.find_deals(50, 1, "highest_discount", 0, 1)
+
+        self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["ref"], 1000)
+        self.assertEqual(results[0]["reference_source"], "steam")
         self.assertTrue(results[0]["steam"])
         self.assertEqual(results[0]["disc"], 10)
-        self.assertEqual(results[0]["float_ref"], 2000)
-        self.assertAlmostEqual(results[0]["float_disc"], 55)
+        self.assertIsNone(results[0]["float_ref"])
+        self.assertIsNone(results[0]["float_disc"])
 
 
 class ListingFormatTests(unittest.TestCase):
@@ -280,6 +334,7 @@ class ListingFormatTests(unittest.TestCase):
             "exp": NOW + timedelta(hours=2, minutes=15),
             "bid": 1490,
             "ref": 1820,
+            "reference_source": "base",
             "float_ref": 2000,
             "steam": False,
             "disc": 18.2,
@@ -305,6 +360,7 @@ class ListingFormatTests(unittest.TestCase):
             "id": "deal-id",
             "bid": 950,
             "ref": 1080,
+            "reference_source": "base",
             "float_ref": 1150,
             "steam": False,
             "disc": 12.5,
@@ -332,6 +388,7 @@ class ListingFormatTests(unittest.TestCase):
             "id": "deal-id",
             "bid": 6100,
             "ref": 2036,
+            "reference_source": "base",
             "float_ref": 6100,
             "steam": False,
             "disc": (2036 - 6100) / 2036 * 100,
@@ -345,6 +402,30 @@ class ListingFormatTests(unittest.TestCase):
 
         self.assertIn("к обычной цене: -199.6% · с учётом float: +0.0%", result)
         self.assertIn("цена $61.00 · обычная цена $20.36 · оценка CSFloat с float $61.00", result)
+
+    def test_predicted_fallback_is_labeled_as_float_adjusted_price(self):
+        row = {
+            "kind": "deal",
+            "id": "deal-id",
+            "bid": 1500,
+            "ref": 2000,
+            "reference_source": "predicted",
+            "float_ref": 2000,
+            "steam": False,
+            "disc": 25,
+            "float_disc": None,
+            "float": 0.2,
+            "name": "Example Skin",
+            "offer": None,
+            "created": None,
+        }
+
+        result = discord_bot.fmt_row(row)
+
+        self.assertIn("к оценке CSFloat с float: +25.0%", result)
+        self.assertIn("цена $15.00 · оценка CSFloat с float $20.00", result)
+        self.assertNotIn("обычная цена", result)
+        self.assertEqual(result.count("оценка CSFloat с float"), 1)
 
 
 if __name__ == "__main__":
