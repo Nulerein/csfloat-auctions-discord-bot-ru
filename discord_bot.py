@@ -127,7 +127,7 @@ def parse_time(s):
 
 
 def load_seen(path=SEEN_AUCTIONS_FILE, now=None):
-    """Load unexpired notified auction IDs from the local JSON state file."""
+    """Load valid, unexpired notified auction IDs from the local JSON state file."""
     path = Path(path)
     now = now or datetime.now(timezone.utc)
     try:
@@ -145,7 +145,12 @@ def load_seen(path=SEEN_AUCTIONS_FILE, now=None):
     for listing_id, expiration in payload.items():
         exp = parse_time(expiration) if isinstance(expiration, str) else None
         if exp is None:
-            raise ValueError(f"Некорректное время окончания аукциона для ID {listing_id!r} в {path}.")
+            logger.warning(
+                "Skipping invalid notification state for auction ID %r in %s: invalid expiration",
+                listing_id,
+                path,
+            )
+            continue
         if exp > now:
             seen[listing_id] = exp
     return seen
@@ -421,7 +426,14 @@ class RadarBot(discord.Client):
         else:
             await self.tree.sync()
         if ALERT_CHANNEL_ID and ALERT_CHANNEL_ID.isdigit():
-            self.seen = load_seen()
+            try:
+                self.seen = load_seen()
+            except (RuntimeError, TypeError, ValueError) as e:
+                logger.warning(
+                    "Could not load notification state; starting with an empty state: %s",
+                    e,
+                )
+                self.seen = {}
             alert_loop.change_interval(minutes=ALERT_INTERVAL_MIN)
             alert_loop.start()
 

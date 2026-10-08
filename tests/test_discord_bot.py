@@ -187,13 +187,44 @@ class SeenAuctionsStateTests(unittest.TestCase):
             "expired": "2025-01-01T11:59:00+00:00",
         })
 
-    def test_load_seen_raises_for_malformed_state(self):
+    def test_load_seen_skips_invalid_entries_and_keeps_valid_state(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "seen.json"
-            path.write_text('{"auction": "not a date"}', encoding="utf-8")
+            path.write_text(
+                json.dumps({
+                    "valid": (NOW + timedelta(hours=1)).isoformat(),
+                    "invalid-date": "not a date",
+                    "invalid-type": 123,
+                }),
+                encoding="utf-8",
+            )
 
-            with self.assertRaisesRegex(ValueError, "Некорректное время"):
-                discord_bot.load_seen(path, now=NOW)
+            with self.assertLogs(discord_bot.logger, level="WARNING") as logs:
+                loaded = discord_bot.load_seen(path, now=NOW)
+
+        self.assertEqual(loaded, {"valid": NOW + timedelta(hours=1)})
+        self.assertEqual(len(logs.records), 2)
+
+
+class SetupHookTests(unittest.IsolatedAsyncioTestCase):
+    async def test_setup_hook_starts_alerts_if_state_file_cannot_be_loaded(self):
+        client = discord_bot.RadarBot()
+        with (
+            patch.object(discord_bot, "GUILD_ID", ""),
+            patch.object(discord_bot, "ALERT_CHANNEL_ID", "123456"),
+            patch.object(discord_bot, "ALERT_INTERVAL_MIN", 5),
+            patch.object(client.tree, "sync", new=AsyncMock()),
+            patch.object(discord_bot, "load_seen", side_effect=RuntimeError("invalid JSON")),
+            patch.object(discord_bot.alert_loop, "change_interval") as change_interval,
+            patch.object(discord_bot.alert_loop, "start") as start,
+            self.assertLogs(discord_bot.logger, level="WARNING") as logs,
+        ):
+            await client.setup_hook()
+
+        self.assertEqual(client.seen, {})
+        change_interval.assert_called_once_with(minutes=5)
+        start.assert_called_once_with()
+        self.assertIn("starting with an empty state", logs.output[0])
 
 
 class ListingSearchTests(unittest.TestCase):
