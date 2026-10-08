@@ -5,12 +5,15 @@ on:
     branches: [ main ]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test-and-lint:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - name: Checkout repository
@@ -31,6 +34,3 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
-
-      - name: Validate syntax
-        run: python -m py_compile discord_bot.py

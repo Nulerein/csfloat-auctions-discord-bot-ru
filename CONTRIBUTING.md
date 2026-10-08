@@ -16,7 +16,6 @@ Thanks for your interest in improving CSFloat AuctionRadar Discord.
 python -m pip install -r requirements-dev.txt
 python -m ruff check .
 python -m unittest discover -s tests -v
-python -m py_compile discord_bot.py
 ```
 
 ## Coding guidelines
