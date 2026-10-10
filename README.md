@@ -23,10 +23,10 @@ Discord-бот для CSFloat, который ищет выгодные скин
 ## Пример вывода
 
 ```text
-**+18.2%** [AK-47 | Neon Revolution (Minimal Wear)](https://csfloat.com/item/12345)
+**+18.1%** [AK-47 | Neon Revolution (Minimal Wear)](https://csfloat.com/item/12345)
 ставка $14.90 · реф $18.20 · 2ч 15м · float 0.1234
 
-**+12.5%** [USP-S | Royal Blue](https://csfloat.com/item/67890)
+**+12.0%** [USP-S | Royal Blue](https://csfloat.com/item/67890)
 цена $9.50 · реф $10.80 · float 0.0345 · 18м назад
 ```
 
